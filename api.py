@@ -16,8 +16,8 @@ from openpyxl.chart.legend import Legend
 from openpyxl.drawing.text import Paragraph, ParagraphProperties, CharacterProperties
 from openpyxl.chart.text import RichText
 from openpyxl.drawing.colors import ColorChoice
+from openpyxl.chart.shapes import GraphicalProperties
 from openpyxl.chart.series import DataPoint
-from openpyxl.drawing.fill import GraphicalProperties
 
 app = FastAPI()
 
@@ -175,6 +175,7 @@ async def analizar_facturas(background_tasks: BackgroundTasks, files: List[Uploa
         chart.dataLabels.showPercent = True
         chart.dataLabels.showVal = False
         chart.dataLabels.showCatName = False
+        chart.dataLabels.showLeaderLines = True
         
         cp = CharacterProperties(solidFill=ColorChoice(srgbClr='FFFFFF'), b=True, sz=1100)
         chart.dataLabels.txPr = RichText(p=[Paragraph(pPr=ParagraphProperties(defRPr=cp), endParaRPr=cp)])
@@ -186,16 +187,17 @@ async def analizar_facturas(background_tasks: BackgroundTasks, files: List[Uploa
         pt1 = DataPoint(idx=1)
         pt1.graphicalProperties = GraphicalProperties(solidFill="990000") # Rojo
         pt2 = DataPoint(idx=2)
-        pt2.graphicalProperties = GraphicalProperties(solidFill="B45F06") # Amarillo/Naranja
+        pt2.graphicalProperties = GraphicalProperties(solidFill="B45F06") # Naranja/Amarillo
         s.dPt = [pt0, pt1, pt2]
         
         ws.add_chart(chart, "L4")
 
-        # Ajuste de anchos para Casillas y UUID
-        ws.column_dimensions['B'].width = 32
-        ws.column_dimensions['E'].width = 32
-        ws.column_dimensions['H'].width = 32
+        # Ajuste de anchos para métricas superiores (B, E, H)
+        ws.column_dimensions['B'].width = 35
+        ws.column_dimensions['E'].width = 35
+        ws.column_dimensions['H'].width = 35
         
+        # Ajuste dinámico para el resto de columnas de la tabla
         for col in range(2, 11):
             column_letter = get_column_letter(col)
             if column_letter not in ['B', 'E', 'H']:
@@ -209,8 +211,7 @@ async def analizar_facturas(background_tasks: BackgroundTasks, files: List[Uploa
 
         ws.column_dimensions['A'].width = 3
 
-        now = datetime.now()
-        timestamp = now.strftime("%d-%m-%Y_%H%Mhrs")
+        timestamp = datetime.now().strftime("%d-%m-%Y_%H%Mhrs")
         final_name = f"Dictamen_Ejecutivo_Art30B_{timestamp}.xlsx"
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_xlsx:
