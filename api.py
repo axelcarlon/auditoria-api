@@ -16,6 +16,8 @@ from openpyxl.chart.legend import Legend
 from openpyxl.drawing.text import Paragraph, ParagraphProperties, CharacterProperties
 from openpyxl.chart.text import RichText
 from openpyxl.drawing.colors import ColorChoice
+from openpyxl.chart.series import DataPoint
+from openpyxl.drawing.fill import GraphicalProperties
 
 app = FastAPI()
 
@@ -95,7 +97,6 @@ async def analizar_facturas(background_tasks: BackgroundTasks, files: List[Uploa
         fill_blue = PatternFill(start_color="0F243E", end_color="0F243E", fill_type="solid")
         font_white_bold = Font(color="FFFFFF", bold=True, size=11)
         font_title = Font(color="FFFFFF", bold=True, size=16)
-        # Punto 1: wrap_text=False para mantener una sola línea
         align_center_no_wrap = Alignment(horizontal="center", vertical="center", wrap_text=False)
         thin_border = Border(left=Side(style='thin', color='BFBFBF'), right=Side(style='thin', color='BFBFBF'),
                              top=Side(style='thin', color='BFBFBF'), bottom=Side(style='thin', color='BFBFBF'))
@@ -148,14 +149,13 @@ async def analizar_facturas(background_tasks: BackgroundTasks, files: List[Uploa
                     cell.number_format = '"$"#,##0.00_-'
                 
                 if col_idx == 10:
-                    # Punto 2: Separación lógica para corregir color de Anomalía
                     if value == "Sin discrepancias":
                         cell.fill = PatternFill(start_color="D9EAD3", end_color="D9EAD3", fill_type="solid")
                         cell.font = Font(color="274E13", bold=True)
                     elif "RIESGO" in value:
                         cell.fill = PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")
                         cell.font = Font(color="990000", bold=True)
-                    else: # Anomalía o Error Estructural
+                    else: 
                         cell.fill = PatternFill(start_color="FCE5CD", end_color="FCE5CD", fill_type="solid")
                         cell.font = Font(color="B45F06", bold=True)
 
@@ -171,35 +171,46 @@ async def analizar_facturas(background_tasks: BackgroundTasks, files: List[Uploa
         chart.title = "Distribución de Resultados Fiscales"
         chart.legend.position = 'b'
         
-        # Punto 3: Solo porcentaje en color Blanco
         chart.dataLabels = DataLabelList()
         chart.dataLabels.showPercent = True
         chart.dataLabels.showVal = False
         chart.dataLabels.showCatName = False
-        chart.dataLabels.showLeaderLines = True
         
-        # Estilo de fuente Blanca para etiquetas
         cp = CharacterProperties(solidFill=ColorChoice(srgbClr='FFFFFF'), b=True, sz=1100)
         chart.dataLabels.txPr = RichText(p=[Paragraph(pPr=ParagraphProperties(defRPr=cp), endParaRPr=cp)])
         
+        # Colores de la gráfica
+        s = chart.series[0]
+        pt0 = DataPoint(idx=0)
+        pt0.graphicalProperties = GraphicalProperties(solidFill="274E13") # Verde
+        pt1 = DataPoint(idx=1)
+        pt1.graphicalProperties = GraphicalProperties(solidFill="990000") # Rojo
+        pt2 = DataPoint(idx=2)
+        pt2.graphicalProperties = GraphicalProperties(solidFill="B45F06") # Amarillo/Naranja
+        s.dPt = [pt0, pt1, pt2]
+        
         ws.add_chart(chart, "L4")
 
-        # Punto 1: Largo necesario para UUID y otros textos (Ajuste automático dinámico)
+        # Ajuste de anchos para Casillas y UUID
+        ws.column_dimensions['B'].width = 32
+        ws.column_dimensions['E'].width = 32
+        ws.column_dimensions['H'].width = 32
+        
         for col in range(2, 11):
-            max_length = 0
             column_letter = get_column_letter(col)
-            # Analizar celdas de datos para determinar el ancho
-            for row in ws.iter_rows(min_row=8, max_row=8 + len(resultados), min_col=col, max_col=col):
-                for cell in row:
-                    if cell.value:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(str(cell.value))
-            ws.column_dimensions[column_letter].width = max_length + 5
+            if column_letter not in ['B', 'E', 'H']:
+                max_length = 0
+                for row in ws.iter_rows(min_row=8, max_row=8 + len(resultados), min_col=col, max_col=col):
+                    for cell in row:
+                        if cell.value:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                ws.column_dimensions[column_letter].width = max_length + 5
 
         ws.column_dimensions['A'].width = 3
 
-        # Punto 4: Formato de nombre solicitado
-        timestamp = datetime.now().strftime("%d-%m-%Y_%H%Mhrs")
+        now = datetime.now()
+        timestamp = now.strftime("%d-%m-%Y_%H%Mhrs")
         final_name = f"Dictamen_Ejecutivo_Art30B_{timestamp}.xlsx"
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_xlsx:
