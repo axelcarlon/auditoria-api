@@ -2,7 +2,7 @@ import os
 import tempfile
 from datetime import datetime
 from typing import List
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from xml_extractor import CFDIXMLExtractor
@@ -33,6 +33,7 @@ async def analizar_facturas(files: List[UploadFile] = File(...)):
     count_riesgo = 0
     count_error = 0
 
+    # Procesamiento de archivos
     for file in files:
         if not file.filename.lower().endswith('.xml'):
             continue
@@ -74,46 +75,47 @@ async def analizar_facturas(files: List[UploadFile] = File(...)):
             if os.path.exists(tmp_xml_path):
                 os.remove(tmp_xml_path)
 
+    # Creación del Excel
     wb = Workbook()
     ws = wb.active
     ws.title = "Dashboard de Auditoría"
     ws.sheet_view.showGridLines = False
 
-    # Estilos Institucionales
-    fill_dark_blue = PatternFill(start_color="0F243E", end_color="0F243E", fill_type="solid")
+    # Estilos
+    fill_blue = PatternFill(start_color="0F243E", end_color="0F243E", fill_type="solid")
     font_white_bold = Font(color="FFFFFF", bold=True, size=11)
     font_title = Font(color="FFFFFF", bold=True, size=16)
-    align_center = Alignment(horizontal="center", vertical="center")
+    align_center_wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
     thin_border = Border(left=Side(style='thin', color='BFBFBF'), right=Side(style='thin', color='BFBFBF'),
                          top=Side(style='thin', color='BFBFBF'), bottom=Side(style='thin', color='BFBFBF'))
 
-    # Título Principal
+    # Título Principal (B2:J2)
     ws.merge_cells('B2:J2')
     title_cell = ws['B2']
     title_cell.value = "DICTAMEN EJECUTIVO DE AUDITORÍA PREVENTIVA (ART. 30-B CFF)"
-    title_cell.fill = fill_dark_blue
+    title_cell.fill = fill_blue
     title_cell.font = font_title
-    title_cell.alignment = align_center
-    ws.row_dimensions[2].height = 35
+    title_cell.alignment = align_center_wrap
+    ws.row_dimensions[2].height = 40
 
-    # Métricas (Un solo color azul sólido)
+    # Métricas Resumen (Azul Sólido)
     metricas = [
         ("B4", "B5", "FACTURAS PROCESADAS", total_facturas),
         ("E4", "E5", "RIESGO FISCAL TOTAL", total_riesgo_monetario),
         ("H4", "H5", "ERRORES ESTRUCTURALES", total_errores)
     ]
     for h_cell, v_cell, text, val in metricas:
+        for c in [h_cell, v_cell]:
+            ws[c].fill = fill_blue
+            ws[c].font = font_white_bold
+            ws[c].alignment = align_center_wrap
         ws[h_cell] = text
-        ws[h_cell].fill = fill_dark_blue
-        ws[h_cell].font = font_white_bold
-        ws[h_cell].alignment = align_center
-        
         ws[v_cell] = val
-        ws[v_cell].fill = fill_dark_blue # Mismo azul solicitado
-        ws[v_cell].font = font_white_bold
-        ws[v_cell].alignment = align_center
         if "RIESGO" in text:
             ws[v_cell].number_format = '"$"#,##0.00_-'
+    
+    ws.row_dimensions[4].height = 25
+    ws.row_dimensions[5].height = 25
 
     # Encabezados de Tabla (Sin abreviaturas)
     headers = [
@@ -122,57 +124,53 @@ async def analizar_facturas(files: List[UploadFile] = File(...)):
     ]
     for col_idx, text in enumerate(headers, start=2):
         cell = ws.cell(row=8, column=col_idx, value=text)
-        cell.fill = fill_dark_blue
+        cell.fill = fill_blue
         cell.font = font_white_bold
-        cell.alignment = align_center
+        cell.alignment = align_center_wrap
         cell.border = thin_border
+    ws.row_dimensions[8].height = 30
 
     # Datos
     for row_idx, data in enumerate(resultados, start=9):
+        ws.row_dimensions[row_idx].height = 30
         for col_idx, value in enumerate(data, start=2):
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
             cell.border = thin_border
+            cell.alignment = align_center_wrap
+            
             if 5 <= col_idx <= 9:
                 cell.number_format = '"$"#,##0.00_-'
             
-            if col_idx == 10: # Estilo dinámico de la columna Dictamen
-                cell.alignment = align_center
+            if col_idx == 10: # Columna Dictamen
                 if "Sin discrepancias" in value:
                     cell.fill = PatternFill(start_color="D9EAD3", end_color="D9EAD3", fill_type="solid")
-                    cell.font = Font(color="274E13", bold=True) # Negritas y color verde
+                    cell.font = Font(color="274E13", bold=True)
                 elif "RIESGO" in value:
                     cell.fill = PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")
-                    cell.font = Font(color="990000", bold=True) # Negritas y color rojo
+                    cell.font = Font(color="990000", bold=True)
                 else:
                     cell.fill = PatternFill(start_color="FCE5CD", end_color="FCE5CD", fill_type="solid")
-                    cell.font = Font(color="B45F06", bold=True) # Negritas y color naranja
+                    cell.font = Font(color="B45F06", bold=True)
 
-    # Activar Filtros
+    # Filtros automáticos
     ws.auto_filter.ref = f"B8:J{8 + len(resultados)}"
 
-    # Hoja de Datos para Gráfico
+    # Gráfico 3D Profesional
     ws_data = wb.create_sheet("DatosGrafico")
-    grafico_data = [
-        ["Estado", "Cantidad"],
-        ["Sin discrepancias", count_ok],
-        ["Riesgo Fiscal", count_riesgo],
-        ["Error / Anomalía", count_error]
-    ]
-    for r in grafico_data:
+    g_data = [["Estado", "Cant"], ["Sin discrepancias", count_ok], ["Riesgo Fiscal", count_riesgo], ["Error / Anomalía", count_error]]
+    for r in g_data:
         ws_data.append(r)
 
-    # Configuración de Gráfico 3D Ejecutivo
     chart = PieChart3D()
     labels = Reference(ws_data, min_col=1, min_row=2, max_row=4)
     data_ref = Reference(ws_data, min_col=2, min_row=1, max_row=4)
     chart.add_data(data_ref, titles_from_data=True)
     chart.set_categories(labels)
-    
     chart.title = "Distribución de Resultados Fiscales"
-    chart.title.tx.rich.p[0].r[0].rPr = Font(size=1400, b=True) # Título grande y negritas (14pt)
+    chart.title.tx.rich.p[0].r[0].rPr = Font(size=1400, b=True)
     
     chart.legend = Legend()
-    chart.legend.position = 'b' # Leyenda en la parte inferior (bottom)
+    chart.legend.position = 'b' # Leyenda abajo
     
     chart.dataLabels = DataLabelList()
     chart.dataLabels.showVal = True
@@ -180,18 +178,18 @@ async def analizar_facturas(files: List[UploadFile] = File(...)):
 
     ws.add_chart(chart, "L4")
 
-    # Ajuste de Columnas
+    # Ajuste final de columnas
     for col_idx in range(2, 11):
-        ws.column_dimensions[get_column_letter(col_idx)].width = 25
+        ws.column_dimensions[get_column_letter(col_idx)].width = 28
     ws.column_dimensions['A'].width = 3
 
-    # Nombre de archivo dinámico
+    # Nombre de archivo solicitado
     timestamp = datetime.now().strftime("%d-%m-%Y_%H%Mhrs")
-    filename_final = f"Dictamen_Ejecutivo_Art30B_{timestamp}.xlsx"
+    final_name = f"Dictamen_Ejecutivo_Art30B_{timestamp}.xlsx"
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_xlsx:
         wb.save(tmp_xlsx.name)
-        return FileResponse(tmp_xlsx.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=filename_final)
+        return FileResponse(tmp_xlsx.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=final_name)
 
 if __name__ == "__main__":
     import uvicorn
