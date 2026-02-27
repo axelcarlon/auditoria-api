@@ -162,6 +162,8 @@ async def analizar_facturas(background_tasks: BackgroundTasks, files: List[Uploa
         ws.auto_filter.ref = f"B8:J{8 + len(resultados)}"
 
         ws_data = wb.create_sheet("DatosGrafico")
+        # Punto 1: Hoja oculta
+        ws_data.sheet_state = 'hidden'
         g_data = [["Estado", "Cant"], ["Sin discrepancias", count_ok], ["Riesgo Fiscal", count_riesgo], ["Error / Anomalía", count_error]]
         for r in g_data: ws_data.append(r)
 
