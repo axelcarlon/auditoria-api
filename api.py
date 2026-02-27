@@ -1,8 +1,9 @@
 import os
 import tempfile
+import traceback
 from datetime import datetime
 from typing import List
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from xml_extractor import CFDIXMLExtractor
@@ -23,173 +24,171 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def cleanup(path: str):
+    if os.path.exists(path):
+        os.remove(path)
+
+@app.get("/")
+async def health_check():
+    return {"status": "online"}
+
 @app.post("/api/analizar")
-async def analizar_facturas(files: List[UploadFile] = File(...)):
-    resultados = []
-    total_facturas = 0
-    total_riesgo_monetario = 0.0
-    total_errores = 0
-    count_ok = 0
-    count_riesgo = 0
-    count_error = 0
+async def analizar_facturas(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)):
+    try:
+        resultados = []
+        total_facturas = 0
+        total_riesgo_monetario = 0.0
+        total_errores = 0
+        count_ok = 0
+        count_riesgo = 0
+        count_error = 0
 
-    # Procesamiento de archivos
-    for file in files:
-        if not file.filename.lower().endswith('.xml'):
-            continue
-        
-        total_facturas += 1
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".xml") as tmp_xml:
-            tmp_xml.write(await file.read())
-            tmp_xml_path = tmp_xml.name
-
-        try:
-            extractor = CFDIXMLExtractor(tmp_xml_path)
-            rfc, uuid, subtotal, iva_d, isr_d = extractor.extract_data()
-            iva_e, isr_e = extractor.validate_taxes(subtotal)
+        # Procesamiento de archivos
+        for file in files:
+            if not file.filename.lower().endswith('.xml'):
+                continue
             
-            dif_iva = abs(iva_e - iva_d)
-            dif_isr = abs(isr_e - isr_d)
-            discrepancia_total = dif_iva + dif_isr
+            total_facturas += 1
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".xml") as tmp_xml:
+                tmp_xml.write(await file.read())
+                tmp_xml_path = tmp_xml.name
 
-            dictamen = "Sin discrepancias"
-            if discrepancia_total > 0.10:
-                dictamen = "RIESGO FISCAL DETECTADO"
-                total_riesgo_monetario += discrepancia_total
-                count_riesgo += 1
-            elif isinstance(rfc, str) and "Error" in rfc:
-                dictamen = "ERROR ESTRUCTURAL"
-                total_errores += 1
-                count_error += 1
-            elif subtotal == 0.0:
-                dictamen = "ANOMALÍA: Sin subtotal"
-                total_errores += 1
-                count_error += 1
-            else:
-                count_ok += 1
+            try:
+                extractor = CFDIXMLExtractor(tmp_xml_path)
+                rfc, uuid, subtotal, iva_d, isr_d = extractor.extract_data()
+                iva_e, isr_e = extractor.validate_taxes(subtotal)
+                
+                dif_iva = abs(iva_e - iva_d)
+                dif_isr = abs(isr_e - isr_d)
+                discrepancia_total = dif_iva + dif_isr
 
-            resultados.append([
-                file.filename, uuid, rfc, subtotal, iva_d, iva_e, isr_d, isr_e, dictamen
-            ])
-        finally:
-            if os.path.exists(tmp_xml_path):
-                os.remove(tmp_xml_path)
-
-    # Creación del Excel
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Dashboard de Auditoría"
-    ws.sheet_view.showGridLines = False
-
-    # Estilos
-    fill_blue = PatternFill(start_color="0F243E", end_color="0F243E", fill_type="solid")
-    font_white_bold = Font(color="FFFFFF", bold=True, size=11)
-    font_title = Font(color="FFFFFF", bold=True, size=16)
-    align_center_wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    thin_border = Border(left=Side(style='thin', color='BFBFBF'), right=Side(style='thin', color='BFBFBF'),
-                         top=Side(style='thin', color='BFBFBF'), bottom=Side(style='thin', color='BFBFBF'))
-
-    # Título Principal (B2:J2)
-    ws.merge_cells('B2:J2')
-    title_cell = ws['B2']
-    title_cell.value = "DICTAMEN EJECUTIVO DE AUDITORÍA PREVENTIVA (ART. 30-B CFF)"
-    title_cell.fill = fill_blue
-    title_cell.font = font_title
-    title_cell.alignment = align_center_wrap
-    ws.row_dimensions[2].height = 40
-
-    # Métricas Resumen (Azul Sólido)
-    metricas = [
-        ("B4", "B5", "FACTURAS PROCESADAS", total_facturas),
-        ("E4", "E5", "RIESGO FISCAL TOTAL", total_riesgo_monetario),
-        ("H4", "H5", "ERRORES ESTRUCTURALES", total_errores)
-    ]
-    for h_cell, v_cell, text, val in metricas:
-        for c in [h_cell, v_cell]:
-            ws[c].fill = fill_blue
-            ws[c].font = font_white_bold
-            ws[c].alignment = align_center_wrap
-        ws[h_cell] = text
-        ws[v_cell] = val
-        if "RIESGO" in text:
-            ws[v_cell].number_format = '"$"#,##0.00_-'
-    
-    ws.row_dimensions[4].height = 25
-    ws.row_dimensions[5].height = 25
-
-    # Encabezados de Tabla (Sin abreviaturas)
-    headers = [
-        "Archivo", "UUID (Folio Fiscal)", "RFC Emisor", "Subtotal Base", 
-        "IVA Declarado", "IVA Esperado", "ISR Declarado", "ISR Esperado", "Dictamen Legal"
-    ]
-    for col_idx, text in enumerate(headers, start=2):
-        cell = ws.cell(row=8, column=col_idx, value=text)
-        cell.fill = fill_blue
-        cell.font = font_white_bold
-        cell.alignment = align_center_wrap
-        cell.border = thin_border
-    ws.row_dimensions[8].height = 30
-
-    # Datos
-    for row_idx, data in enumerate(resultados, start=9):
-        ws.row_dimensions[row_idx].height = 30
-        for col_idx, value in enumerate(data, start=2):
-            cell = ws.cell(row=row_idx, column=col_idx, value=value)
-            cell.border = thin_border
-            cell.alignment = align_center_wrap
-            
-            if 5 <= col_idx <= 9:
-                cell.number_format = '"$"#,##0.00_-'
-            
-            if col_idx == 10: # Columna Dictamen
-                if "Sin discrepancias" in value:
-                    cell.fill = PatternFill(start_color="D9EAD3", end_color="D9EAD3", fill_type="solid")
-                    cell.font = Font(color="274E13", bold=True)
-                elif "RIESGO" in value:
-                    cell.fill = PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")
-                    cell.font = Font(color="990000", bold=True)
+                dictamen = "Sin discrepancias"
+                if discrepancia_total > 0.10:
+                    dictamen = "RIESGO FISCAL DETECTADO"
+                    total_riesgo_monetario += discrepancia_total
+                    count_riesgo += 1
+                elif isinstance(rfc, str) and "Error" in rfc:
+                    dictamen = "ERROR ESTRUCTURAL"
+                    total_errores += 1
+                    count_error += 1
+                elif subtotal == 0.0:
+                    dictamen = "ANOMALÍA: Sin subtotal"
+                    total_errores += 1
+                    count_error += 1
                 else:
-                    cell.fill = PatternFill(start_color="FCE5CD", end_color="FCE5CD", fill_type="solid")
-                    cell.font = Font(color="B45F06", bold=True)
+                    count_ok += 1
 
-    # Filtros automáticos
-    ws.auto_filter.ref = f"B8:J{8 + len(resultados)}"
+                resultados.append([
+                    file.filename, uuid, rfc, subtotal, iva_d, iva_e, isr_d, isr_e, dictamen
+                ])
+            finally:
+                if os.path.exists(tmp_xml_path):
+                    os.remove(tmp_xml_path)
 
-    # Gráfico 3D Profesional
-    ws_data = wb.create_sheet("DatosGrafico")
-    g_data = [["Estado", "Cant"], ["Sin discrepancias", count_ok], ["Riesgo Fiscal", count_riesgo], ["Error / Anomalía", count_error]]
-    for r in g_data:
-        ws_data.append(r)
+        # Creación del Excel
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Dashboard de Auditoría"
+        ws.sheet_view.showGridLines = False
 
-    chart = PieChart3D()
-    labels = Reference(ws_data, min_col=1, min_row=2, max_row=4)
-    data_ref = Reference(ws_data, min_col=2, min_row=1, max_row=4)
-    chart.add_data(data_ref, titles_from_data=True)
-    chart.set_categories(labels)
-    chart.title = "Distribución de Resultados Fiscales"
-    chart.title.tx.rich.p[0].r[0].rPr = Font(size=1400, b=True)
-    
-    chart.legend = Legend()
-    chart.legend.position = 'b' # Leyenda abajo
-    
-    chart.dataLabels = DataLabelList()
-    chart.dataLabels.showVal = True
-    chart.dataLabels.showPercent = True
+        fill_blue = PatternFill(start_color="0F243E", end_color="0F243E", fill_type="solid")
+        font_white_bold = Font(color="FFFFFF", bold=True, size=11)
+        font_title = Font(color="FFFFFF", bold=True, size=16)
+        align_center_wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        thin_border = Border(left=Side(style='thin', color='BFBFBF'), right=Side(style='thin', color='BFBFBF'),
+                             top=Side(style='thin', color='BFBFBF'), bottom=Side(style='thin', color='BFBFBF'))
 
-    ws.add_chart(chart, "L4")
+        ws.merge_cells('B2:J2')
+        title_cell = ws['B2']
+        title_cell.value = "DICTAMEN EJECUTIVO DE AUDITORÍA PREVENTIVA (ART. 30-B CFF)"
+        title_cell.fill = fill_blue
+        title_cell.font = font_title
+        title_cell.alignment = align_center_wrap
+        ws.row_dimensions[2].height = 40
 
-    # Ajuste final de columnas
-    for col_idx in range(2, 11):
-        ws.column_dimensions[get_column_letter(col_idx)].width = 28
-    ws.column_dimensions['A'].width = 3
+        metricas = [
+            ("B4", "B5", "FACTURAS PROCESADAS", total_facturas),
+            ("E4", "E5", "RIESGO FISCAL TOTAL", total_riesgo_monetario),
+            ("H4", "H5", "ERRORES ESTRUCTURALES", total_errores)
+        ]
+        for h_cell, v_cell, text, val in metricas:
+            for c in [h_cell, v_cell]:
+                ws[c].fill = fill_blue
+                ws[c].font = font_white_bold
+                ws[c].alignment = align_center_wrap
+            ws[h_cell] = text
+            ws[v_cell] = val
+            if "RIESGO" in text:
+                ws[v_cell].number_format = '"$"#,##0.00_-'
+        
+        ws.row_dimensions[4].height = 25
+        ws.row_dimensions[5].height = 25
 
-    # Nombre de archivo solicitado
-    timestamp = datetime.now().strftime("%d-%m-%Y_%H%Mhrs")
-    final_name = f"Dictamen_Ejecutivo_Art30B_{timestamp}.xlsx"
+        headers = [
+            "Archivo", "UUID (Folio Fiscal)", "RFC Emisor", "Subtotal Base", 
+            "IVA Declarado", "IVA Esperado", "ISR Declarado", "ISR Esperado", "Dictamen Legal"
+        ]
+        for col_idx, text in enumerate(headers, start=2):
+            cell = ws.cell(row=8, column=col_idx, value=text)
+            cell.fill = fill_blue
+            cell.font = font_white_bold
+            cell.alignment = align_center_wrap
+            cell.border = thin_border
+        ws.row_dimensions[8].height = 30
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_xlsx:
-        wb.save(tmp_xlsx.name)
-        return FileResponse(tmp_xlsx.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=final_name)
+        for row_idx, data in enumerate(resultados, start=9):
+            ws.row_dimensions[row_idx].height = 30
+            for col_idx, value in enumerate(data, start=2):
+                cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                cell.border = thin_border
+                cell.alignment = align_center_wrap
+                if 5 <= col_idx <= 9:
+                    cell.number_format = '"$"#,##0.00_-'
+                if col_idx == 10:
+                    if "Sin" in value:
+                        cell.fill = PatternFill(start_color="D9EAD3", end_color="D9EAD3", fill_type="solid")
+                        cell.font = Font(color="274E13", bold=True)
+                    elif "RIESGO" in value:
+                        cell.fill = PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")
+                        cell.font = Font(color="990000", bold=True)
+                    else:
+                        cell.fill = PatternFill(start_color="FCE5CD", end_color="FCE5CD", fill_type="solid")
+                        cell.font = Font(color="B45F06", bold=True)
+
+        ws.auto_filter.ref = f"B8:J{8 + len(resultados)}"
+
+        ws_data = wb.create_sheet("DatosGrafico")
+        g_data = [["Estado", "Cant"], ["Sin discrepancias", count_ok], ["Riesgo Fiscal", count_riesgo], ["Error / Anomalía", count_error]]
+        for r in g_data: ws_data.append(r)
+
+        chart = PieChart3D()
+        chart.add_data(Reference(ws_data, min_col=2, min_row=1, max_row=4), titles_from_data=True)
+        chart.set_categories(Reference(ws_data, min_col=1, min_row=2, max_row=4))
+        chart.title = "Distribución de Resultados Fiscales"
+        chart.legend.position = 'b'
+        chart.dataLabels = DataLabelList()
+        chart.dataLabels.showVal = True
+        chart.dataLabels.showPercent = True
+        ws.add_chart(chart, "L4")
+
+        for col_idx in range(2, 11):
+            ws.column_dimensions[get_column_letter(col_idx)].width = 28
+        ws.column_dimensions['A'].width = 3
+
+        timestamp = datetime.now().strftime("%d-%m-%Y_%H%Mhrs")
+        final_name = f"Dictamen_Ejecutivo_Art30B_{timestamp}.xlsx"
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_xlsx:
+            wb.save(tmp_xlsx.name)
+            output_path = tmp_xlsx.name
+
+        background_tasks.add_task(cleanup, output_path)
+        return FileResponse(output_path, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=final_name)
+
+    except Exception as e:
+        print("ERROR EN API:")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
