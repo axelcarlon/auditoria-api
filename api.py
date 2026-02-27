@@ -13,6 +13,9 @@ from openpyxl.utils import get_column_letter
 from openpyxl.chart import PieChart3D, Reference
 from openpyxl.chart.label import DataLabelList
 from openpyxl.chart.legend import Legend
+from openpyxl.drawing.text import Paragraph, ParagraphProperties, CharacterProperties
+from openpyxl.chart.text import RichText
+from openpyxl.drawing.colors import ColorChoice
 
 app = FastAPI()
 
@@ -43,7 +46,6 @@ async def analizar_facturas(background_tasks: BackgroundTasks, files: List[Uploa
         count_riesgo = 0
         count_error = 0
 
-        # Procesamiento de archivos
         for file in files:
             if not file.filename.lower().endswith('.xml'):
                 continue
@@ -85,7 +87,6 @@ async def analizar_facturas(background_tasks: BackgroundTasks, files: List[Uploa
                 if os.path.exists(tmp_xml_path):
                     os.remove(tmp_xml_path)
 
-        # Creación del Excel
         wb = Workbook()
         ws = wb.active
         ws.title = "Dashboard de Auditoría"
@@ -94,7 +95,8 @@ async def analizar_facturas(background_tasks: BackgroundTasks, files: List[Uploa
         fill_blue = PatternFill(start_color="0F243E", end_color="0F243E", fill_type="solid")
         font_white_bold = Font(color="FFFFFF", bold=True, size=11)
         font_title = Font(color="FFFFFF", bold=True, size=16)
-        align_center_wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        # Punto 1: wrap_text=False para mantener una sola línea
+        align_center_no_wrap = Alignment(horizontal="center", vertical="center", wrap_text=False)
         thin_border = Border(left=Side(style='thin', color='BFBFBF'), right=Side(style='thin', color='BFBFBF'),
                              top=Side(style='thin', color='BFBFBF'), bottom=Side(style='thin', color='BFBFBF'))
 
@@ -103,7 +105,7 @@ async def analizar_facturas(background_tasks: BackgroundTasks, files: List[Uploa
         title_cell.value = "DICTAMEN EJECUTIVO DE AUDITORÍA PREVENTIVA (ART. 30-B CFF)"
         title_cell.fill = fill_blue
         title_cell.font = font_title
-        title_cell.alignment = align_center_wrap
+        title_cell.alignment = align_center_no_wrap
         ws.row_dimensions[2].height = 40
 
         metricas = [
@@ -115,7 +117,7 @@ async def analizar_facturas(background_tasks: BackgroundTasks, files: List[Uploa
             for c in [h_cell, v_cell]:
                 ws[c].fill = fill_blue
                 ws[c].font = font_white_bold
-                ws[c].alignment = align_center_wrap
+                ws[c].alignment = align_center_no_wrap
             ws[h_cell] = text
             ws[v_cell] = val
             if "RIESGO" in text:
@@ -132,7 +134,7 @@ async def analizar_facturas(background_tasks: BackgroundTasks, files: List[Uploa
             cell = ws.cell(row=8, column=col_idx, value=text)
             cell.fill = fill_blue
             cell.font = font_white_bold
-            cell.alignment = align_center_wrap
+            cell.alignment = align_center_no_wrap
             cell.border = thin_border
         ws.row_dimensions[8].height = 30
 
@@ -141,17 +143,19 @@ async def analizar_facturas(background_tasks: BackgroundTasks, files: List[Uploa
             for col_idx, value in enumerate(data, start=2):
                 cell = ws.cell(row=row_idx, column=col_idx, value=value)
                 cell.border = thin_border
-                cell.alignment = align_center_wrap
+                cell.alignment = align_center_no_wrap
                 if 5 <= col_idx <= 9:
                     cell.number_format = '"$"#,##0.00_-'
+                
                 if col_idx == 10:
-                    if "Sin" in value:
+                    # Punto 2: Separación lógica para corregir color de Anomalía
+                    if value == "Sin discrepancias":
                         cell.fill = PatternFill(start_color="D9EAD3", end_color="D9EAD3", fill_type="solid")
                         cell.font = Font(color="274E13", bold=True)
                     elif "RIESGO" in value:
                         cell.fill = PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")
                         cell.font = Font(color="990000", bold=True)
-                    else:
+                    else: # Anomalía o Error Estructural
                         cell.fill = PatternFill(start_color="FCE5CD", end_color="FCE5CD", fill_type="solid")
                         cell.font = Font(color="B45F06", bold=True)
 
@@ -166,15 +170,35 @@ async def analizar_facturas(background_tasks: BackgroundTasks, files: List[Uploa
         chart.set_categories(Reference(ws_data, min_col=1, min_row=2, max_row=4))
         chart.title = "Distribución de Resultados Fiscales"
         chart.legend.position = 'b'
+        
+        # Punto 3: Solo porcentaje en color Blanco
         chart.dataLabels = DataLabelList()
-        chart.dataLabels.showVal = True
         chart.dataLabels.showPercent = True
+        chart.dataLabels.showVal = False
+        chart.dataLabels.showCatName = False
+        chart.dataLabels.showLeaderLines = True
+        
+        # Estilo de fuente Blanca para etiquetas
+        cp = CharacterProperties(solidFill=ColorChoice(srgbClr='FFFFFF'), b=True, sz=1100)
+        chart.dataLabels.txPr = RichText(p=[Paragraph(pPr=ParagraphProperties(defRPr=cp), endParaRPr=cp)])
+        
         ws.add_chart(chart, "L4")
 
-        for col_idx in range(2, 11):
-            ws.column_dimensions[get_column_letter(col_idx)].width = 28
+        # Punto 1: Largo necesario para UUID y otros textos (Ajuste automático dinámico)
+        for col in range(2, 11):
+            max_length = 0
+            column_letter = get_column_letter(col)
+            # Analizar celdas de datos para determinar el ancho
+            for row in ws.iter_rows(min_row=8, max_row=8 + len(resultados), min_col=col, max_col=col):
+                for cell in row:
+                    if cell.value:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+            ws.column_dimensions[column_letter].width = max_length + 5
+
         ws.column_dimensions['A'].width = 3
 
+        # Punto 4: Formato de nombre solicitado
         timestamp = datetime.now().strftime("%d-%m-%Y_%H%Mhrs")
         final_name = f"Dictamen_Ejecutivo_Art30B_{timestamp}.xlsx"
 
